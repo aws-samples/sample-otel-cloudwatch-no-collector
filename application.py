@@ -51,7 +51,11 @@ from botocore.awsrequest import AWSRequest
 # ============================================================
 # Configuration
 # ============================================================
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+AWS_REGION = (
+    os.environ.get("AWS_REGION")
+    or BotocoreSession().get_config_variable("region")
+    or "us-east-1"
+)
 LOG_GROUP_NAME = os.environ.get("CW_LOG_GROUP", "/otel/demo/direct-logs")
 LOG_STREAM_NAME = os.environ.get("CW_LOG_STREAM", "flask-app")
 
