@@ -67,9 +67,13 @@ Each signal has unique endpoint, authentication, IAM, and setup requirements. Se
 
 ## Quick Start: Deploy to Elastic Beanstalk
 
+You can deploy this to **any AWS region** — the app auto-detects the region at runtime via instance metadata. Just pass your desired region to `eb init`:
+
 ```bash
-# 1. Initialize
-eb init -p python-3.11 otel-cloudwatch-demo --region us-east-1
+# 1. Initialize (use any supported region)
+eb init -p python-3.11 otel-cloudwatch-demo --region <your-region>
+# Example: eb init -p python-3.11 otel-cloudwatch-demo --region us-east-1
+# Example: eb init -p python-3.11 otel-cloudwatch-demo --region eu-west-1
 
 # 2. Create environment (provisions everything automatically)
 eb create otel-demo-env --instance-type t3.micro --single
@@ -85,6 +89,8 @@ The `.ebextensions` configs automatically handle:
 - IAM permissions for all three signals
 - Log group and stream creation
 - Environment variables
+
+> **No code changes needed per region.** The app resolves `AWS_REGION` from the instance metadata at runtime, so the OTLP endpoints and SigV4 signing adapt automatically.
 
 ## Verify All Three Signals
 
@@ -165,8 +171,8 @@ eb deploy
 # Terminate the EB environment
 eb terminate otel-demo-env
 
-# Delete the log group
-aws logs delete-log-group --log-group-name /otel/demo/direct-logs
+# Delete the log group (specify the region you deployed to)
+aws logs delete-log-group --log-group-name /otel/demo/direct-logs --region <your-region>
 ```
 
 > **Note:** Transaction Search is an account-level setting and will persist after terminating the environment.
