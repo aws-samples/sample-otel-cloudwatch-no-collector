@@ -1,0 +1,13 @@
+# Virtual environments - must not be deployed
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# EB config
+.elasticbeanstalk/
+
+# IDE / OS
+.git/
+.DS_Store
+*.egg-info/

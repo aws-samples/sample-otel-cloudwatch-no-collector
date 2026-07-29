@@ -1,0 +1,17 @@
+Flask==3.1.1
+gunicorn==23.0.0
+
+# OpenTelemetry Core
+opentelemetry-api==1.33.0
+opentelemetry-sdk==1.33.0
+
+# OTLP HTTP Exporter (sends logs, metrics, and traces directly to CloudWatch endpoints)
+opentelemetry-exporter-otlp-proto-http==1.33.0
+
+# AWS X-Ray ID Generator (required for X-Ray compatible trace IDs)
+opentelemetry-sdk-extension-aws==2.0.1
+
+# Required for SigV4 signing of OTLP requests to CloudWatch
+botocore==1.35.99
+boto3==1.35.99
+requests==2.32.3
