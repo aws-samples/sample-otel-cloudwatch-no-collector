@@ -234,6 +234,62 @@ service("otel-cloudwatch-demo") { responsetime > 0.5 }
 | 6 | IAM | `xray:PutTraceSegments`, `xray:PutTelemetryRecords` |
 | 7 | Transaction Search | Must be enabled (account-level, one-time) |
 | 8 | Extra dependency | `opentelemetry-sdk-extension-aws` |
+| 9 | SigV4 signed header set | Minimal (`Content-Type` only) — X-Ray rejects mismatches from urllib3 header normalization if you sign everything |
+
+## SigV4 Header-Signing Gotcha (X-Ray Only)
+
+The X-Ray OTLP endpoint enforces SigV4 more strictly than the Logs and Metrics endpoints. If your `SigV4Session` copies every header from the already-prepared `requests` object into the AWS signature — the natural implementation — you will see:
+
+```
+Failed to export batch code: 403, reason:
+The request signature we calculated does not match the signature you provided.
+```
+
+...on traces only, while logs and metrics keep working. The reason: `requests` adds session defaults (`User-Agent`, `Accept-Encoding`, `Connection`, `Accept`) and a computed `Content-Length` before `send()` runs. If those all land in the signed header set, `urllib3` may normalize or drop some of them (e.g. `Connection` on HTTP/1.1) before the bytes leave the box, and the server's re-computed signature no longer matches.
+
+**Fix:** sign only a minimal, stable header set. `Content-Type` is enough — botocore's `add_auth()` will inject `Host`, `X-Amz-Date`, `X-Amz-Content-SHA256`, `X-Amz-Security-Token` (if using temp creds), and `Authorization` itself. Everything else stays unsigned and can be mutated freely.
+
+```python
+def send(self, prepared_request, **kwargs):
+    body = prepared_request.body or b""
+
+    content_type = prepared_request.headers.get(
+        "Content-Type", "application/x-protobuf"
+    )
+    aws_request = AWSRequest(
+        method=prepared_request.method,
+        url=prepared_request.url,
+        headers={"Content-Type": content_type},   # minimal signed set
+        data=body,
+    )
+
+    credentials = self._credentials.get_frozen_credentials()
+    SigV4Auth(credentials, self._service, self._region).add_auth(aws_request)
+
+    prepared_request.headers.update(dict(aws_request.headers))
+    return super().send(prepared_request, **kwargs)
+```
+
+This mirrors the pattern used in the AWS Distro for OpenTelemetry (ADOT) Python distribution — see `AwsAuthSession` in [aws-otel-python-instrumentation](https://github.com/aws-observability/aws-otel-python-instrumentation).
+
+## Debugging Exporter Failures
+
+The OTLP trace exporter reports failures through Python's `logging` module. If your logging bridge only attaches an OTel `LoggingHandler` (routing everything back through the OTLP log pipeline to CloudWatch), you have a chicken-and-egg problem: the message telling you *why traces are failing* also has to survive a working OTLP path.
+
+Attach a stdout `StreamHandler` alongside the OTel handler so exporter errors show up in `/var/log/web.stdout.log` (or `journalctl -u web`) regardless of pipeline state:
+
+```python
+otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+stdout_handler = logging.StreamHandler()
+stdout_handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(name)s: %(message)s"
+))
+
+root = logging.getLogger()
+root.setLevel(logging.INFO)
+root.addHandler(otel_handler)
+root.addHandler(stdout_handler)
+```
 
 ## Troubleshooting
 
@@ -245,6 +301,8 @@ service("otel-cloudwatch-demo") { responsetime > 0.5 }
 | 403 Forbidden | IAM missing X-Ray permissions | Add `xray:PutTraceSegments` or attach `AWSXrayWriteOnlyPolicy` |
 | 403 Signature error | Wrong service name | Must be `"xray"` (not `"xray-traces"` or `"traces"`) |
 | 403 Signature error | Compression enabled | Use `NoCompression` |
+| 403 Signature mismatch on traces only, logs/metrics OK | Signing too many mutable headers (User-Agent, Accept-Encoding, ...) | Sign a minimal header set (`Content-Type`); let `add_auth()` add the rest. See "SigV4 Header-Signing Gotcha" above |
+| Exporter errors invisible in logs | Only OTel LoggingHandler attached | Add a stdout StreamHandler so failures surface in `/var/log/web.stdout.log` |
 | Traces appear but no nested spans | Not using context properly | Ensure child spans are created within `with` block of parent |
 | Can't find traces in console | Wrong time range | Set time filter to "Last 1 hour" and click "Run query" |
 | Can't find traces in console | Looking in wrong place | Use Transaction Search, not the old X-Ray console |
@@ -260,3 +318,4 @@ service("otel-cloudwatch-demo") { responsetime > 0.5 }
 | Extra dependency | `opentelemetry-sdk-extension-aws` | None | None |
 | Console location | X-Ray traces > Transaction Search | Log groups | Metrics > All metrics |
 | Latency to appear | ~15 seconds | ~5 seconds | ~30 seconds (export interval) |
+| SigV4 header-set strictness | Strict — sign minimal set | Lenient | Lenient |

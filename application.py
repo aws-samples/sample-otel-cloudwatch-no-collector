@@ -88,15 +88,23 @@ class SigV4Session(req_lib.Session):
         # Get the body bytes for signing
         body = prepared_request.body or b""
 
-        # Build the AWS request for signing
-        headers_to_sign = {}
-        for key, value in prepared_request.headers.items():
-            headers_to_sign[key] = value
-
+        # IMPORTANT: only sign a minimal, stable header set. If we include
+        # every header that requests has already merged in (User-Agent,
+        # Accept-Encoding, Connection, Content-Length, ...) they all end up
+        # in the SignedHeaders list, and any downstream mutation by urllib3
+        # (case, whitespace, dropping Connection on HTTP/1.1, etc.) will
+        # break the signature. The X-Ray OTLP endpoint enforces this
+        # strictly; CloudWatch Logs / Metrics happen to be more lenient,
+        # which is why traces were the only signal returning 403.
+        #
+        # This mirrors ADOT's AwsAuthSession implementation.
+        content_type = prepared_request.headers.get(
+            "Content-Type", "application/x-protobuf"
+        )
         aws_request = AWSRequest(
             method=prepared_request.method,
             url=prepared_request.url,
-            headers=headers_to_sign,
+            headers={"Content-Type": content_type},
             data=body,
         )
 
@@ -104,7 +112,11 @@ class SigV4Session(req_lib.Session):
         credentials = self._credentials.get_frozen_credentials()
         SigV4Auth(credentials, self._service, self._region).add_auth(aws_request)
 
-        # Apply the signed headers (Authorization, X-Amz-Date, etc.)
+        # Merge the auth-related headers (Authorization, X-Amz-Date,
+        # X-Amz-Content-SHA256, X-Amz-Security-Token, Host) back onto the
+        # prepared request. Other headers (User-Agent, Accept-Encoding, ...)
+        # remain unsigned and can be mutated by urllib3 without breaking
+        # the signature.
         prepared_request.headers.update(dict(aws_request.headers))
 
         return super().send(prepared_request, **kwargs)
@@ -208,15 +220,32 @@ def setup_logging_bridge(logger_provider):
     """
     Bridge standard Python logging to OpenTelemetry so that
     regular log statements are exported via OTLP.
+
+    Also attaches a StreamHandler so that OTel SDK diagnostics
+    (e.g. OTLP exporter failures) are visible in the local
+    stdout log (gunicorn / EB /var/log/web.stdout.log). Without
+    this, exporter errors only reach CloudWatch via the OTLP
+    log pipeline, which is circular when that pipeline is the
+    thing that's failing.
     """
     from opentelemetry.sdk._logs import LoggingHandler
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
 
     otel_handler = LoggingHandler(
         level=logging.INFO, logger_provider=logger_provider
     )
+    root.addHandler(otel_handler)
 
-    logging.getLogger().addHandler(otel_handler)
-    logging.getLogger().setLevel(logging.INFO)
+    stdout_handler = logging.StreamHandler()
+    stdout_handler.setLevel(logging.INFO)
+    stdout_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"
+        )
+    )
+    root.addHandler(stdout_handler)
 
 
 # ============================================================

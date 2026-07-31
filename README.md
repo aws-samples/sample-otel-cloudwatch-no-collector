@@ -34,6 +34,8 @@ Send OpenTelemetry **logs, metrics, and traces** directly to Amazon CloudWatch u
 2. A custom `SigV4Session` signs every outgoing request using AWS IAM credentials
 3. Each signal goes to its own dedicated CloudWatch endpoint
 4. No compression is used (SigV4 requires signing the raw payload body)
+5. Only a **minimal header set** (`Content-Type` plus the SigV4-managed headers) is signed. If you sign every default header `requests` adds (`User-Agent`, `Accept-Encoding`, `Connection`, `Content-Length`, ...), `urllib3` is free to normalize them between signing and sending. Logs and Metrics happen to tolerate this; X-Ray's validator does not and will reject the request with `403 The request signature we calculated does not match`. See `SigV4Session.send()` in `application.py`.
+6. OTel SDK diagnostics are attached to both an OTLP log exporter (routed to CloudWatch) and a local `StreamHandler`. This means an exporter failure is visible in `/var/log/web.stdout.log` even if the OTLP log path itself is broken, avoiding a chicken-and-egg debugging problem.
 
 ## Signal-Specific Configuration Guides
 
@@ -189,7 +191,10 @@ aws logs delete-log-group --log-group-name /otel/demo/direct-logs --region <your
 | 403 from any endpoint | IAM permissions missing | Check role policies for the specific signal |
 | 403 Signature mismatch | Wrong SigV4 service name | Use `"logs"`, `"monitoring"`, or `"xray"` |
 | 403 Signature mismatch | Compression enabled | Use `Compression.NoCompression` |
+| 403 Signature mismatch on `/v1/traces` only (logs/metrics work) | Signing too many mutable headers (User-Agent, Accept-Encoding, Connection, ...); urllib3 mutates them before send | Sign a minimal header set — only `Content-Type` + the SigV4-managed headers. See `SigV4Session.send()` |
+| Exporter errors hidden | Only OTLP LoggingHandler attached, no stdout handler | Add a `StreamHandler` in `setup_logging_bridge` so failures also land in `/var/log/web.stdout.log` |
 | Traces silently dropped | Missing AwsXRayIdGenerator | Add `id_generator=AwsXRayIdGenerator()` to TracerProvider |
+| "Platform version isn't recommended" alert on the env | Platform version was locked at `eb create` time; a newer patch has shipped | Run `eb upgrade` on the existing env. `default_platform: Python 3.11` in `.elasticbeanstalk/config.yml` is a branch alias, so fresh `eb create` runs pick up the latest recommended version automatically |
 | Deployment fails | `.venv` in bundle | Ensure `.ebignore` excludes `.venv/` |
 
 ## References
