@@ -195,6 +195,7 @@ aws logs delete-log-group --log-group-name /otel/demo/direct-logs --region <your
 | Exporter errors hidden | Only OTLP LoggingHandler attached, no stdout handler | Add a `StreamHandler` in `setup_logging_bridge` so failures also land in `/var/log/web.stdout.log` |
 | Traces silently dropped | Missing AwsXRayIdGenerator | Add `id_generator=AwsXRayIdGenerator()` to TracerProvider |
 | "Platform version isn't recommended" alert on the env | Platform version was locked at `eb create` time; a newer patch has shipped | Run `eb upgrade` on the existing env. `default_platform: Python 3.11` in `.elasticbeanstalk/config.yml` is a branch alias, so fresh `eb create` runs pick up the latest recommended version automatically |
+| `eb create` in second region fails with "IAM role/policy already exists" | IAM is global, `aws-elasticbeanstalk-ec2-role` is shared across regions, and inline policy names must be unique per role | Fixed in this repo — inline policy names are prefixed with `${AWS::StackName}`. If you have an already-broken deployment, either delete the pre-existing inline policies from the shared role (`aws iam delete-role-policy --role-name aws-elasticbeanstalk-ec2-role --policy-name OtelDirectLogsAccess` etc.) or terminate the first region's env and redeploy |
 | Deployment fails | `.venv` in bundle | Ensure `.ebignore` excludes `.venv/` |
 
 ## References
