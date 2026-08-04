@@ -47,15 +47,45 @@ import requests as req_lib
 from botocore.session import Session as BotocoreSession
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
+from botocore.utils import InstanceMetadataRegionFetcher
+from botocore.exceptions import BotoCoreError
 
 # ============================================================
 # Configuration
 # ============================================================
-AWS_REGION = (
-    os.environ.get("AWS_REGION")
-    or BotocoreSession().get_config_variable("region")
-    or "us-east-1"
-)
+# Region resolution order:
+#   1. AWS_REGION / AWS_DEFAULT_REGION env vars (explicit override)
+#   2. ~/.aws/config profile default
+#   3. EC2 IMDS (this is what makes "deploy to any region" work on EB/EC2)
+#   4. us-east-1 as a last-resort fallback
+#
+# NOTE: botocore's Session.get_config_variable("region") does NOT hit IMDS —
+# it only reads env vars and ~/.aws/config. On an EB instance where none of
+# those are set, we'd silently default to us-east-1 and ship all telemetry
+# there regardless of where the app is actually running. We use
+# InstanceMetadataRegionFetcher explicitly to close that gap.
+def _resolve_region():
+    for env_var in ("AWS_REGION", "AWS_DEFAULT_REGION"):
+        value = os.environ.get(env_var)
+        if value:
+            return value
+
+    config_region = BotocoreSession().get_config_variable("region")
+    if config_region:
+        return config_region
+
+    try:
+        imds_region = InstanceMetadataRegionFetcher().retrieve_region()
+        if imds_region:
+            return imds_region
+    except BotoCoreError:
+        # IMDS unavailable (local dev, disabled, network error) — fall through.
+        pass
+
+    return "us-east-1"
+
+
+AWS_REGION = _resolve_region()
 LOG_GROUP_NAME = os.environ.get("CW_LOG_GROUP", "/otel/demo/direct-logs")
 LOG_STREAM_NAME = os.environ.get("CW_LOG_STREAM", "flask-app")
 
